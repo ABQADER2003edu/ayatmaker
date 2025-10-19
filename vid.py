@@ -367,7 +367,8 @@ def create_final_video(verse_text, verse_audio_path, random_videos, output_filen
 
 # استخدام الدوال
 if __name__ == "__main__":
-    num_videos = int(input("Enter Number of Videos You Want To Create : "))
+    num_videos = 10
+    # num_videos = int(input("Enter Number of Videos You Want To Create : "))
     with open('StartAya.txt', 'r') as file:
         value = file.read().strip()
         int_value = int(value)
@@ -377,4 +378,5 @@ if __name__ == "__main__":
     output_folder = "OutPut"
     logo_path = "logo.png"
     num_videos_per_video = 4
+
     create_final_videos(start_verse, end_verse, video_folder, output_folder, logo_path, num_videos_per_video, num_videos)
