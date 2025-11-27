@@ -282,7 +282,7 @@ def create_final_videos(start_verse, end_verse, video_folder, output_folder, log
                 print(f"تم حذف الملف الصوتي المؤقت: {verse_audio_path}")
             
             try:
-                asyncio.run(send_message(f"تم انشاء الفيديو {output_filename} "))
+                asyncio.run(send_message(f"تم انشاء الفيديو {output_filename} \n تم إنهاء الفيديو {num_vid}. "))
             except:
                 print("no")
             gc.collect() 
