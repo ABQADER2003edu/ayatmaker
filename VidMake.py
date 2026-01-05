@@ -358,7 +358,7 @@ def create_final_video(verse_text, verse_audio_path, random_videos, output_filen
 
 # استخدام الدوال
 if __name__ == "__main__":
-    num_videos = 35
+    num_videos = 60
     # num_videos = int(input("Enter Number of Videos You Want To Create : "))
     with open('StartAya.txt', 'r') as file:
         value = file.read().strip()
