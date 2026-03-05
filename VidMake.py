@@ -67,7 +67,7 @@ class Config:
     USE_WORD_SYNC = True  # تفعيل المزامنة كلمة بكلمة
     MIN_WORDS_PER_SEGMENT = 2  # الحد الأدنى لعدد الكلمات في المقطع
     MIN_CHARS_PER_SEGMENT = 15  # الحد الأدنى لعدد الأحرف في المقطع
-    MAX_CHARS_PER_SEGMENT = 20  # الحد الأقصى لعدد الأحرف في المقطع
+    MAX_CHARS_PER_SEGMENT = 30  # الحد الأقصى لعدد الأحرف في المقطع
     
     # إعدادات التأثيرات
     TRANSITION_DURATION = 0.4  # مدة الانتقال بين المقاطع (بالثواني)
