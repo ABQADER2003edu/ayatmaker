@@ -10,25 +10,16 @@ import asyncio
 import random
 import textwrap
 import gc
+import subprocess
+import json
 from typing import List, Tuple, Dict
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 import requests
-import pandas as pd
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
-from moviepy.editor import (
-    VideoFileClip, AudioFileClip, ImageClip, ColorClip,
-    CompositeVideoClip, concatenate_videoclips
-)
-from moviepy.video.fx.fadein import fadein
-from moviepy.video.fx.fadeout import fadeout
-
-# إصلاح مشكلة PIL
-import PIL
-PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
 
 
 # ============================================================================
@@ -81,8 +72,8 @@ class Config:
     # إعدادات التأثيرات
     TRANSITION_DURATION = 0.4  # مدة الانتقال بين المقاطع (بالثواني)
     BLACK_OVERLAY_OPACITY = 0.55  # شفافية الطبقة السوداء
-    LOGO_WIDTH = 200  # عرض الشعار
-    LOGO_POSITION = (0.1, 20)  # موضع الشعار (x, y)
+    LOGO_WIDTH = 220  # عرض الشعار
+    LOGO_POSITION = (0.03, 20)  # موضع الشعار (x, y)
     
     # إعدادات مدة الصوت المقبولة
     MIN_AUDIO_DURATION = 15  # الحد الأدنى لمدة الصوت (بالثواني)
@@ -97,12 +88,12 @@ class Config:
     }
     
     # إعدادات التوقف والانتظار
-    SLEEP_BETWEEN_VIDEOS = 45  # الانتظار بين الفيديوهات (بالثواني)
-    SLEEP_ON_SKIP = 10  # الانتظار عند تخطي آية (بالثواني)
+    SLEEP_BETWEEN_VIDEOS = 15  # الانتظار بين الفيديوهات (بالثواني)
+    SLEEP_ON_SKIP = 5  # الانتظار عند تخطي آية (بالثواني)
     
     # إعدادات الإنتاج
     TOTAL_VERSES = 6236  # إجمالي عدد الآيات في القرآن
-    DEFAULT_NUM_VIDEOS = 2  # عدد الفيديوهات المطلوب إنشاؤها
+    DEFAULT_NUM_VIDEOS = 120  # عدد الفيديوهات المطلوب إنشاؤها
 
 
 # ============================================================================
@@ -598,60 +589,26 @@ def select_random_videos(video_folder: str, num_videos: int) -> List[str]:
     return video_paths
 
 
-def get_video_dimensions(video_path: str) -> Tuple[int, int]:
+def get_media_duration(filepath: str) -> float:
     """
-    الحصول على أبعاد الفيديو
+    الحصول على مدة ملف وسائط باستخدام ffprobe
     
     Args:
-        video_path: مسار الفيديو
+        filepath: مسار الملف
         
     Returns:
-        tuple: (العرض, الارتفاع)
+        المدة بالثواني
     """
-    video = VideoFileClip(video_path)
-    width, height = video.size
-    video.close()
-    return width, height
-
-
-def create_video_clips(video_paths: List[str], total_duration: float, audio_clip) -> List[VideoFileClip]:
-    """
-    إنشاء مقاطع الفيديو مع التأثيرات
-    
-    Args:
-        video_paths: قائمة مسارات الفيديوهات
-        total_duration: المدة الإجمالية المطلوبة
-        audio_clip: مقطع الصوت
-        
-    Returns:
-        قائمة بمقاطع الفيديو المعدلة
-    """
-    video_clips = []
-    duration_per_clip = total_duration / len(video_paths)
-    
-    for i, video_path in enumerate(video_paths):
-        # تحميل وتغيير حجم الفيديو
-        video_clip = VideoFileClip(video_path).resize((Config.VIDEO_WIDTH, Config.VIDEO_HEIGHT))
-        video_clip = video_clip.set_duration(duration_per_clip)
-        
-        # إضافة تأثيرات الظهور والاختفاء
-        if i > 0:
-            video_clip = fadein(video_clip, duration=Config.TRANSITION_DURATION)
-        video_clip = fadeout(video_clip, duration=Config.TRANSITION_DURATION)
-        
-        video_clips.append(video_clip)
-    
-    # إضافة مقطع فارغ إذا كانت المدة أقل من مدة الصوت
-    clips_total_duration = sum(clip.duration for clip in video_clips)
-    if clips_total_duration < audio_clip.duration:
-        blank_duration = audio_clip.duration - clips_total_duration
-        blank_clip = ColorClip(
-            size=(Config.VIDEO_WIDTH, Config.VIDEO_HEIGHT),
-            color=(0, 0, 0)
-        ).set_duration(blank_duration)
-        video_clips.append(blank_clip)
-    
-    return video_clips
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', filepath],
+            capture_output=True, text=True, timeout=15
+        )
+        data = json.loads(result.stdout)
+        return float(data['format']['duration'])
+    except Exception as e:
+        print(f"خطأ في ffprobe: {e}")
+        raise
 
 
 # ============================================================================
@@ -696,52 +653,52 @@ def calculate_text_width(audio_duration: float) -> int:
     return Config.TEXT_WIDTH_MAPPING['default']
 
 
-def create_text_clip_with_pil(
+def create_text_image(
     text: str,
-    duration: float,
+    output_path: str,
     fontsize: int = None,
     color: str = None,
     stroke_color: str = None,
-    stroke_width: int = None,
-    size: Tuple[int, int] = None
-) -> ImageClip:
+    stroke_width: int = None
+) -> str:
     """
-    إنشاء مقطع نصي باستخدام PIL
+    إنشاء صورة نصية PNG باستخدام PIL وحفظها في ملف
     
     Args:
         text: النص المراد عرضه
-        duration: مدة عرض النص
+        output_path: مسار حفظ صورة PNG
         fontsize: حجم الخط (افتراضي من Config)
         color: لون النص (افتراضي من Config)
         stroke_color: لون حدود النص (افتراضي من Config)
         stroke_width: عرض حدود النص (افتراضي من Config)
-        size: حجم الصورة (افتراضي من Config)
         
     Returns:
-        مقطع الصورة النصية
+        مسار الصورة المحفوظة
     """
-    # استخدام القيم الافتراضية من Config
     fontsize = fontsize or Config.FONT_SIZE
     color = color or Config.TEXT_COLOR
     stroke_color = stroke_color or Config.TEXT_STROKE_COLOR
     stroke_width = stroke_width or Config.TEXT_STROKE_WIDTH
-    size = size or (Config.VIDEO_WIDTH, Config.VIDEO_HEIGHT)
     
-    # إنشاء صورة فارغة شفافة
-    img = Image.new('RGBA', size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    
-    # الحصول على الخط العربي
     font = get_arabic_font(fontsize)
     
     # حساب حجم النص
-    bbox = draw.textbbox((0, 0), text, font=font)
+    temp_img = Image.new('RGBA', (1, 1))
+    temp_draw = ImageDraw.Draw(temp_img)
+    bbox = temp_draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
+    del temp_img, temp_draw
     
-    # حساب موضع النص (في المنتصف)
-    x = (size[0] - text_width) / 2
-    y = (size[1] - text_height) / 2
+    # إنشاء صورة بحجم النص + padding
+    padding = stroke_width * 2 + 10
+    img_w = text_width + padding * 2
+    img_h = text_height + padding * 2
+    img = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    x = padding - bbox[0]
+    y = padding - bbox[1]
     
     # رسم الحدود (stroke)
     if stroke_width > 0:
@@ -752,47 +709,11 @@ def create_text_clip_with_pil(
     # رسم النص الأساسي
     draw.text((x, y), text, font=font, fill=color)
     
-    # تحويل الصورة إلى numpy array
-    img_array = np.array(img)
+    # حفظ كملف PNG
+    img.save(output_path, 'PNG')
+    del img, draw
     
-    # إنشاء ImageClip من الصورة
-    clip = ImageClip(img_array).set_duration(duration)
-    
-    return clip
-
-
-def create_text_clips(verse_text: str, audio_duration: float) -> List[ImageClip]:
-    """
-    إنشاء مقاطع النص من الآية
-    
-    Args:
-        verse_text: نص الآية
-        audio_duration: مدة الصوت
-        
-    Returns:
-        قائمة بمقاطع النص
-    """
-    # تقسيم النص إلى أسطر
-    text_width = calculate_text_width(audio_duration)
-    lines = textwrap.wrap(verse_text, width=text_width)
-    num_lines = len(lines)
-    
-    # حساب مدة كل سطر
-    duration_per_line = audio_duration / num_lines
-    
-    # إنشاء مقاطع النص
-    text_clips = []
-    for i, line in enumerate(lines):
-        clip = create_text_clip_with_pil(line, duration_per_line)
-        
-        # إضافة تأثيرات الظهور والاختفاء
-        if i > 0:
-            clip = clip.fadein(Config.TRANSITION_DURATION)
-        clip = clip.fadeout(Config.TRANSITION_DURATION)
-        
-        text_clips.append(clip)
-    
-    return text_clips
+    return output_path
 
 
 def group_words_into_segments(words: List[dict], segments: List[list]) -> List[dict]:
@@ -879,48 +800,62 @@ def group_words_into_segments(words: List[dict], segments: List[list]) -> List[d
     return grouped_segments
 
 
-def create_synchronized_text_clips(grouped_segments: List[dict]) -> List[ImageClip]:
+# ============================================================================
+# وظائف إنشاء الفيديو النهائي (ffmpeg مباشرة)
+# ============================================================================
+
+def _prepare_text_overlays(
+    verse_text: str,
+    audio_duration: float,
+    timing_data: dict = None
+) -> List[dict]:
     """
-    إنشاء مقاطع نصية متزامنة مع الصوت
+    إعداد صور النص المتراكبة وحفظها كملفات PNG مؤقتة
     
-    Args:
-        grouped_segments: قائمة المقاطع المجمعة من group_words_into_segments
-        
     Returns:
-        قائمة بمقاطع النص مع التوقيت المحدد
+        قائمة من القواميس: [{path, start, end}, ...]
     """
-    text_clips = []
+    temp_dir = Config.TEMP_AUDIO_FOLDER
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
     
-    for i, segment in enumerate(grouped_segments):
-        # إنشاء مقطع نصي
-        clip = create_text_clip_with_pil(
-            text=segment["text"],
-            duration=segment["duration"]
+    text_overlays = []
+    
+    if Config.USE_WORD_SYNC and timing_data:
+        print("استخدام المزامنة الصوتية كلمة بكلمة...")
+        grouped_segments = group_words_into_segments(
+            timing_data['words'],
+            timing_data['segments']
         )
         
-        # تعيين وقت البداية
-        clip = clip.set_start(segment["start"])
+        for i, seg in enumerate(grouped_segments):
+            img_path = os.path.join(temp_dir, f"text_overlay_{i}.png")
+            create_text_image(seg['text'], img_path)
+            text_overlays.append({
+                'path': img_path,
+                'start': seg['start'],
+                'end': seg['end']
+            })
+            print(f"مقطع {i+1}/{len(grouped_segments)}: '{seg['text'][:30]}...' "
+                  f"({seg['start']:.2f}s - {seg['end']:.2f}s)")
+    else:
+        print("استخدام الطريقة التقليدية لعرض النص...")
+        text_width = calculate_text_width(audio_duration)
+        lines = textwrap.wrap(verse_text, width=text_width)
+        duration_per_line = audio_duration / len(lines)
         
-        # إضافة تأثيرات الظهور والاختفاء
-        fade_duration = min(0.1, segment["duration"] / 3)  # تأثير سريع
-        if i == 0:
-            clip = clip.fadein(0).fadeout(fade_duration)
-        else :
-            clip = clip.fadein(fade_duration).fadeout(fade_duration)
-
-
-        text_clips.append(clip)
-        
-        print(f"مقطع {i+1}/{len(grouped_segments)}: '{segment['text'][:30]}...' "
-              f"({segment['start']:.2f}s - {segment['end']:.2f}s)")
+        for i, line in enumerate(lines):
+            img_path = os.path.join(temp_dir, f"text_overlay_{i}.png")
+            create_text_image(line, img_path)
+            start_time = i * duration_per_line
+            text_overlays.append({
+                'path': img_path,
+                'start': start_time,
+                'end': start_time + duration_per_line
+            })
     
-    return text_clips
+    return text_overlays
 
-
-
-# ============================================================================
-# وظائف إنشاء الفيديو النهائي
-# ============================================================================
 
 def create_final_video(
     verse_text: str,
@@ -931,7 +866,8 @@ def create_final_video(
     timing_data: dict = None
 ) -> None:
     """
-    إنشاء الفيديو النهائي
+    إنشاء الفيديو النهائي باستخدام ffmpeg مباشرة
+    كل المعالجة تتم في كود C الأصلي لـ ffmpeg بدلاً من Python
     
     Args:
         verse_text: نص الآية
@@ -939,76 +875,136 @@ def create_final_video(
         video_paths: قائمة مسارات الفيديوهات
         output_filename: اسم ملف الإخراج
         logo_path: مسار الشعار
-        timing_data: بيانات توقيت الكلمات (اختياري) - يحتوي على words و segments
+        timing_data: بيانات توقيت الكلمات (اختياري)
     """
-    print(f"جارٍ إنشاء الفيديو النهائي '{output_filename}'...")
+    print(f"جارٍ إنشاء الفيديو النهائي '{output_filename}' باستخدام ffmpeg...")
     
-    # تحميل الصوت
-    audio_clip = AudioFileClip(verse_audio_path)
-    audio_duration = audio_clip.duration
+    # الحصول على مدة الصوت
+    audio_duration = get_media_duration(verse_audio_path)
+    duration_per_clip = audio_duration / len(video_paths)
     
-    # إنشاء مقاطع الفيديو
-    video_clips = create_video_clips(video_paths, audio_duration, audio_clip)
-    final_clip = concatenate_videoclips(video_clips)
-    final_clip = final_clip.set_audio(audio_clip)
+    W = Config.VIDEO_WIDTH
+    H = Config.VIDEO_HEIGHT
     
-    # إضافة الطبقة السوداء الشبه شفافة
-    black_overlay = ColorClip(size=final_clip.size, color=(0, 0, 0))
-    black_overlay = black_overlay.set_duration(final_clip.duration)
-    black_overlay = black_overlay.set_opacity(Config.BLACK_OVERLAY_OPACITY)
-    final_clip = CompositeVideoClip([final_clip, black_overlay])
+    # ---- إعداد صور النص ----
+    text_overlays = _prepare_text_overlays(verse_text, audio_duration, timing_data)
     
-    # إنشاء وإضافة مقاطع النص
-    if Config.USE_WORD_SYNC and timing_data:
-        # استخدام المزامنة الصوتية كلمة بكلمة
-        print("استخدام المزامنة الصوتية كلمة بكلمة...")
-        grouped_segments = group_words_into_segments(
-            timing_data['words'],
-            timing_data['segments']
-        )
-        text_clips = create_synchronized_text_clips(grouped_segments)
-        
-        # إضافة النصوص إلى الفيديو (التوقيت محدد مسبقاً)
-        for text_clip in text_clips:
-            text_clip = text_clip.set_position(('center', 'center'))
-            final_clip = CompositeVideoClip([final_clip, text_clip])
-    else:
-        # استخدام الطريقة التقليدية
-        print("استخدام الطريقة التقليدية لعرض النص...")
-        text_clips = create_text_clips(verse_text, audio_duration)
-        
-        # حساب أوقات بداية كل مقطع نصي
-        text_durations = [clip.duration for clip in text_clips]
-        text_start_times = [sum(text_durations[:i]) for i in range(len(text_durations))]
-        
-        # إضافة النصوص إلى الفيديو
-        for i, text_clip in enumerate(text_clips):
-            text_clip = text_clip.set_position(('center', 'center')).set_start(text_start_times[i])
-            final_clip = CompositeVideoClip([final_clip, text_clip])
-
-    
-    # إضافة الشعار
-    logo = ImageClip(logo_path).set_duration(final_clip.duration).resize(width=Config.LOGO_WIDTH)
-    final_clip = CompositeVideoClip([
-        final_clip.set_position(("left", "top")),
-        logo.set_position(Config.LOGO_POSITION)
-    ])
-    
-    # حساب الوقت المتوقع للإنشاء وإرسال رسالة
-    estimated_time = 4 * 24 / 60 * audio_duration
+    # ---- إرسال رسالة التقدير ----
+    estimated_time = 2 * 24 / 60 * audio_duration
     try:
         asyncio.run(send_telegram_message(
-            f"جاري إنشاء الفيديو {output_filename}\nسيستغرق حوالي {estimated_time:.1f} دقيقة"
+            f"جاري إنشاء الفيديو \n {output_filename}\nسيستغرق حوالي {estimated_time:.1f} دقيقة"
         ))
     except Exception as e:
         print(f"خطأ في إرسال رسالة التقدير: {e}")
     
-    # كتابة الفيديو النهائي
-    final_clip.write_videofile(
-        output_filename,
-        codec=Config.VIDEO_CODEC,
-        fps=Config.VIDEO_FPS
+    # ---- بناء أمر ffmpeg ----
+    input_args = []
+    
+    # إدخال مقاطع الفيديو (مع التكرار للمقاطع القصيرة)
+    for vp in video_paths:
+        input_args.extend(['-stream_loop', '-1', '-i', vp])
+    
+    # إدخال الصوت
+    audio_idx = len(video_paths)
+    input_args.extend(['-i', verse_audio_path])
+    
+    # إدخال الشعار
+    logo_idx = audio_idx + 1
+    input_args.extend(['-i', logo_path])
+    
+    # إدخال صور النص
+    text_start_idx = logo_idx + 1
+    for tov in text_overlays:
+        input_args.extend(['-i', tov['path']])
+    
+    # ---- بناء filter_complex ----
+    filters = []
+    
+    # 1. تحجيم وقص وتأثيرات fade لكل مقطع فيديو
+    td = Config.TRANSITION_DURATION
+    for i in range(len(video_paths)):
+        fade_out_start = max(0, duration_per_clip - td)
+        fades = f",fade=t=out:st={fade_out_start:.4f}:d={td}"
+        if i > 0:
+            fades = f",fade=t=in:st=0:d={td}" + fades
+        
+        filters.append(
+            f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+            f"crop={W}:{H},setsar=1,"
+            f"trim=duration={duration_per_clip:.4f},setpts=PTS-STARTPTS"
+            f"{fades}[v{i}]"
+        )
+    
+    # 2. دمج مقاطع الفيديو
+    concat_in = ''.join(f'[v{i}]' for i in range(len(video_paths)))
+    filters.append(f"{concat_in}concat=n={len(video_paths)}:v=1:a=0[bg]")
+    
+    # 3. طبقة سوداء شبه شفافة (تقليل سطوع كل قناة لون)
+    # 1 - opacity = النسبة المتبقية من الألوان الأصلية
+    brightness = 1.0 - Config.BLACK_OVERLAY_OPACITY
+    filters.append(
+        f"[bg]colorchannelmixer=rr={brightness}:gg={brightness}:bb={brightness}[dark]"
     )
+    
+    # 4. تحجيم الشعار
+    filters.append(f"[{logo_idx}:v]scale={Config.LOGO_WIDTH}:-1[logo]")
+    
+    # 5. إضافة طبقات النص
+    prev_label = "dark"
+    for i, tov in enumerate(text_overlays):
+        text_idx = text_start_idx + i
+        next_label = f"t{i}"
+        filters.append(
+            f"[{prev_label}][{text_idx}:v]overlay=x=(W-w)/2:y=(H-h)/2:"
+            f"enable='between(t,{tov['start']:.4f},{tov['end']:.4f})'[{next_label}]"
+        )
+        prev_label = next_label
+    
+    # 6. إضافة الشعار
+    logo_x = Config.LOGO_POSITION[0]
+    logo_y = Config.LOGO_POSITION[1]
+    # تحويل النسبة المئوية إلى بكسل إذا كانت قيمة عشرية < 1
+    if isinstance(logo_x, float) and logo_x < 1:
+        logo_x = int(logo_x * W)
+    logo_x = int(logo_x)
+    logo_y = int(logo_y)
+    filters.append(f"[{prev_label}][logo]overlay=x={logo_x}:y={logo_y}[final]")
+    
+    filter_complex = ';'.join(filters)
+    
+    # ---- تنفيذ ffmpeg ----
+    cmd = [
+        'ffmpeg', '-y',
+        *input_args,
+        '-filter_complex', filter_complex,
+        '-map', '[final]',
+        '-map', f'{audio_idx}:a',
+        '-c:v', Config.VIDEO_CODEC,
+        '-preset', 'veryfast',
+        '-threads', '1',
+        '-c:a', 'aac',
+        '-fps_mode', 'cfr',
+        '-r', str(Config.VIDEO_FPS),
+        '-shortest',
+        output_filename
+    ]
+    
+    print(f"تنفيذ ffmpeg مع {len(video_paths)} فيديو و {len(text_overlays)} نص...")
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"خطأ ffmpeg stderr: {result.stderr[-500:]}")
+        raise RuntimeError(f"فشل ffmpeg (كود الخروج: {result.returncode})")
+    
+    # تنظيف ملفات النص المؤقتة
+    for tov in text_overlays:
+        try:
+            if os.path.exists(tov['path']):
+                os.remove(tov['path'])
+        except Exception:
+            pass
     
     print(f"تم إنشاء الفيديو النهائي '{output_filename}' بنجاح.")
 
@@ -1106,14 +1102,7 @@ def process_verse(
             audio_path = fetch_verse_audio(verse_number)
             verse_text = fetch_verse_text(verse_number)
         
-        audio_clip = AudioFileClip(audio_path)
-        audio_duration = audio_clip.duration
-        
-        # إغلاق الملف بشكل صحيح
-        audio_clip.close()
-        del audio_clip
-        gc.collect()
-        time.sleep(0.3)  # انتظار قصير للتأكد من إغلاق الملف
+        audio_duration = get_media_duration(audio_path)
         
         # التحقق من مدة الصوت
         if not is_audio_duration_valid(audio_duration):
@@ -1169,7 +1158,7 @@ def process_verse(
         # إرسال رسالة النجاح
         try:
             asyncio.run(send_telegram_message(
-                f"✅ تم إنشاء الفيديو {output_filename}\nتم إنهاء الفيديو {remaining_videos}."
+                f"✅ تم إنشاء الفيديو \n {output_filename}\nتم إنهاء الفيديو {remaining_videos}."
             ))
         except:
             pass
